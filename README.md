@@ -28,7 +28,7 @@ We strongly encourage the users to retrain the models if they are used for acade
 ## Results (From Pretrained models)
 
 | ![avatar](https://github.com/jingyuanli001/RFR-Inpainting/blob/master/results/masked_img_321.png) | ![avatar](https://github.com/jingyuanli001/RFR-Inpainting/blob/master/results/img_321.png) | ![avatar](https://github.com/jingyuanli001/RFR-Inpainting/blob/master/results/masked_img_326.png) | ![avatar](https://github.com/jingyuanli001/RFR-Inpainting/blob/master/results/img_326.png) |
-| ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | ![avatar](https://github.com/jingyuanli001/RFR-Inpainting/blob/master/results/masked_img_106.png) | ![avatar](https://github.com/jingyuanli001/RFR-Inpainting/blob/master/results/img_106.png) | ![avatar](https://github.com/jingyuanli001/RFR-Inpainting/blob/master/results/masked_img_586.png) | ![avatar](https://github.com/jingyuanli001/RFR-Inpainting/blob/master/results/img_586.png) |
 
 
@@ -36,10 +36,10 @@ We strongly encourage the users to retrain the models if they are used for acade
 ## Reproducibility
 
 We've checked the reproducibilities of the results in the paper. 
-| |Reproducible|
-|:----:|:----:|
-|Paris StreetView|True|
-|CelebA|True|
+|                  | Reproducible |
+| :--------------: | :----------: |
+| Paris StreetView |     True     |
+|      CelebA      |     True     |
 
 ## Running the program
 

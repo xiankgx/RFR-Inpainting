@@ -6,8 +6,12 @@ from torchvision import models
 from modules.Attention import AttentionModule
 from modules.partialconv2d import PartialConv2d
 
+# epsilon = 1e-7
+epsilon = 1e-6  # Avoid overflow when using mixed precision training
+
 
 class VGG16FeatureExtractor(nn.Module):
+
     def __init__(self):
         super().__init__()
         vgg16 = models.vgg16(pretrained=True)
@@ -80,40 +84,54 @@ class RFRModule(nn.Module):
         for i in range(3):
             name = 'enc_{:d}'.format(i + 1)
             out_channel = in_channel * 2
-            block = [nn.Conv2d(in_channel, out_channel, 3, 2, 1, bias=False),
-                     nn.BatchNorm2d(out_channel),
-                     nn.ReLU(inplace=True)]
+            block = [
+                nn.Conv2d(in_channel, out_channel, 3, 2, 1, bias=False),
+                nn.BatchNorm2d(out_channel),
+                nn.ReLU(inplace=True)
+            ]
             in_channel = out_channel
             setattr(self, name, nn.Sequential(*block))
 
         for i in range(3, 6):
             name = 'enc_{:d}'.format(i + 1)
-            block = [nn.Conv2d(in_channel, out_channel, 3, 1, 2, dilation=2, bias=False),
-                     nn.BatchNorm2d(out_channel),
-                     nn.ReLU(inplace=True)]
+            block = [
+                nn.Conv2d(in_channel, out_channel, 3,
+                          1, 2, dilation=2, bias=False),
+                nn.BatchNorm2d(out_channel),
+                nn.ReLU(inplace=True)
+            ]
             setattr(self, name, nn.Sequential(*block))
         self.att = AttentionModule(512)
 
         for i in range(5, 3, -1):
             name = 'dec_{:d}'.format(i)
-            block = [nn.Conv2d(in_channel + in_channel, in_channel, 3, 1, 2, dilation=2, bias=False),
-                     nn.BatchNorm2d(in_channel),
-                     nn.LeakyReLU(0.2, inplace=True)]
+            block = [
+                nn.Conv2d(in_channel + in_channel, in_channel,
+                          3, 1, 2, dilation=2, bias=False),
+                nn.BatchNorm2d(in_channel),
+                nn.LeakyReLU(0.2, inplace=True)
+            ]
             setattr(self, name, nn.Sequential(*block))
 
-        block = [nn.ConvTranspose2d(1024, 512, 4, 2, 1, bias=False),
-                 nn.BatchNorm2d(512),
-                 nn.LeakyReLU(0.2, inplace=True)]
+        block = [
+            nn.ConvTranspose2d(1024, 512, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(512),
+            nn.LeakyReLU(0.2, inplace=True)
+        ]
         self.dec_3 = nn.Sequential(*block)
 
-        block = [nn.ConvTranspose2d(768, 256, 4, 2, 1, bias=False),
-                 nn.BatchNorm2d(256),
-                 nn.LeakyReLU(0.2, inplace=True)]
+        block = [
+            nn.ConvTranspose2d(768, 256, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(0.2, inplace=True)
+        ]
         self.dec_2 = nn.Sequential(*block)
 
-        block = [nn.ConvTranspose2d(384, 64, 4, 2, 1, bias=False),
-                 nn.BatchNorm2d(64),
-                 nn.LeakyReLU(0.2, inplace=True)]
+        block = [
+            nn.ConvTranspose2d(384, 64, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.LeakyReLU(0.2, inplace=True)
+        ]
         self.dec_1 = nn.Sequential(*block)
 
     def forward(self, input, mask):
@@ -137,12 +155,14 @@ class RFRModule(nn.Module):
             h = getattr(self, dec_l_key)(h)
             if i == 3:
                 h = self.att(h, mask)
+
         return h
 
 
 class RFRNet(nn.Module):
     def __init__(self):
         super(RFRNet, self).__init__()
+
         self.Pconv1 = PartialConv2d(3, 64, 7, 2, 3,
                                     multi_channel=True,
                                     bias=False)
@@ -192,7 +212,9 @@ class RFRNet(nn.Module):
             x2, m2 = self.Pconv21(x2, m2)
             x2, m2 = self.Pconv22(x2, m2)
             x2 = F.leaky_relu(self.bn2(x2), inplace=True)
+
             x2 = self.RFRModule(x2, m2[:, 0:1, :, :])
+
             x2 = x2 * m2
             feature_group.append(x2.view(n, c, 1, h, w))
             mask_group.append(m2.view(n, c, 1, h, w))
@@ -200,15 +222,15 @@ class RFRNet(nn.Module):
         x3 = torch.cat(feature_group, dim=2)
         m3 = torch.cat(mask_group, dim=2)
         amp_vec = m3.mean(dim=2)
-        x3 = (x3*m3).mean(dim=2) / (amp_vec+1e-7)
+        x3 = (x3 * m3).mean(dim=2)/(amp_vec + epsilon)
         x3 = x3.view(n, c, h, w)
         m3 = m3[:, :, -1, :, :]
 
         x4 = self.Tconv(x3)
         x4 = F.leaky_relu(self.bn3(x4), inplace=True)
         m4 = F.interpolate(m3, scale_factor=2)
-        x5 = torch.cat([in_image, x4], dim=1)
 
+        x5 = torch.cat([in_image, x4], dim=1)
         m5 = torch.cat([mask, m4], dim=1)
         x5, _ = self.tail1(x5, m5)
         x5 = F.leaky_relu(x5, inplace=True)

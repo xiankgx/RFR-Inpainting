@@ -24,6 +24,7 @@ def run():
     parser.add_argument('--test', action='store_true')
     # parser.add_argument('--gpu_id', type=str, default="0")
     parser.add_argument('--multi_gpu', action='store_true')
+    parser.add_argument('--fp16', action='store_true')
     args = parser.parse_args()
 
     # os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
@@ -54,7 +55,8 @@ def run():
 
         model.train(dataloader, args.model_save_path,
                     args.finetune, args.num_iters,
-                    multi_gpu=args.multi_gpu)
+                    multi_gpu=args.multi_gpu,
+                    fp16=args.fp16)
 
 
 if __name__ == '__main__':

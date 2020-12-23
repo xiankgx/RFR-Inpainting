@@ -10,6 +10,9 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+# epsilon = 1e-8
+epsilon = 1e-6  # Avoid overflow when using mixed precision training
+
 
 class PartialConv2d(nn.Conv2d):
     def __init__(self, *args, **kwargs):
@@ -60,8 +63,9 @@ class PartialConv2d(nn.Conv2d):
                 self.update_mask = F.conv2d(mask, self.weight_maskUpdater, bias=None,
                                             stride=self.stride, padding=self.padding, dilation=self.dilation, groups=1)
 
-                self.mask_ratio = self.slide_winsize/(self.update_mask + 1e-8)
-                # self.mask_ratio = torch.max(self.update_mask)/(self.update_mask + 1e-8)
+                self.mask_ratio = self.slide_winsize / \
+                    (self.update_mask + epsilon)
+                # self.mask_ratio = torch.max(self.update_mask)/(self.update_mask + epsilon)
                 self.update_mask = torch.clamp(self.update_mask, 0, 1)
                 self.mask_ratio = torch.mul(self.mask_ratio, self.update_mask)
 

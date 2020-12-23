@@ -11,6 +11,34 @@ from modules.RFRNet import RFRNet, VGG16FeatureExtractor
 from utils.io import load_ckpt, save_ckpt
 
 
+def gram_matrix(input_tensor):
+    """
+    Compute Gram matrix
+    :param input_tensor: input tensor with shape
+    (batch_size, nbr_channels, height, width)
+    :return: Gram matrix of y
+
+    Ripped from: https://github.com/NVIDIA/partialconv/blob/master/models/loss.py#L17-L40
+    """
+    (b, ch, h, w) = input_tensor.size()
+    features = input_tensor.view(b, ch, w * h)
+    features_t = features.transpose(1, 2)
+
+    # more efficient and formal way to avoid underflow for mixed precision training
+    input = torch.zeros(b, ch, ch).type(features.type())
+    gram = torch.baddbmm(input, features, features_t,
+                         beta=0, alpha=1./(ch * h * w), out=None)
+
+    # naive way to avoid underflow for mixed precision training
+    # features = features / (ch * h)
+    # gram = features.bmm(features_t) / w
+
+    # for fp32 training, it is also safe to use the following:
+    # gram = features.bmm(features_t) / (ch * h * w)
+
+    return gram
+
+
 class RFRNetModel():
     def __init__(self):
         self.loss_weights = {
@@ -263,16 +291,22 @@ class RFRNetModel():
         for i in range(len(A_feats)):
             A_feat = A_feats[i]
             B_feat = B_feats[i]
-            _, c, w, h = A_feat.size()
-            A_feat = A_feat.view(A_feat.size(0),
-                                 A_feat.size(1),
-                                 A_feat.size(2) * A_feat.size(3))
-            B_feat = B_feat.view(B_feat.size(0),
-                                 B_feat.size(1),
-                                 B_feat.size(2) * B_feat.size(3))
-            A_style = torch.matmul(A_feat, A_feat.transpose(2, 1))
-            B_style = torch.matmul(B_feat, B_feat.transpose(2, 1))
-            loss_value += torch.mean(torch.abs(A_style - B_style)/(c * w * h))
+
+            # _, c, w, h = A_feat.size()
+            # A_feat = A_feat.view(A_feat.size(0),
+            #                      A_feat.size(1),
+            #                      A_feat.size(2) * A_feat.size(3))
+            # B_feat = B_feat.view(B_feat.size(0),
+            #                      B_feat.size(1),
+            #                      B_feat.size(2) * B_feat.size(3))
+            # A_style = torch.matmul(A_feat, A_feat.transpose(2, 1))
+            # B_style = torch.matmul(B_feat, B_feat.transpose(2, 1))
+            # loss_value += torch.mean(torch.abs(A_style - B_style)/(c * w * h))
+
+            # Avoid underflow when using mixed precision training
+            gram_A = gram_matrix(A_feat)
+            gram_B = gram_matrix(B_feat)
+            loss_value += torch.mean(torch.abs(gram_A - gram_B))
 
         return loss_value
 
@@ -299,3 +333,17 @@ class RFRNetModel():
 
     def __cuda__(self, *args):
         return (item.to(self.device) for item in args)
+
+
+if __name__ == "__main__":
+    x = torch.rand(2, 64, 256, 256)
+    x_clone = x.clone()
+
+    _, c, w, h = x.size()
+    x = x.view(x.size(0),
+               x.size(1),
+               x.size(2) * x.size(3))
+    gram_1 = torch.matmul(x, x.transpose(2, 1))/(c * w * h)
+    gram_2 = gram_matrix(x_clone)
+
+    assert torch.allclose(gram_1, gram_2), "gram_1 ! gram_2"

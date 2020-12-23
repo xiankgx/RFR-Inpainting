@@ -43,8 +43,6 @@ def run():
     else:
         model.initialize_model(args.model_path, True)
         model.cuda()
-        if args.multi_gpu:
-            model.multi_gpu()
 
         dataloader = DataLoader(Dataset(args.data_root, args.mask_root,
                                         args.mask_mode,
@@ -55,7 +53,8 @@ def run():
                                 num_workers=args.n_threads)
 
         model.train(dataloader, args.model_save_path,
-                    args.finetune, args.num_iters)
+                    args.finetune, args.num_iters,
+                    multi_gpu=args.multi_gpu)
 
 
 if __name__ == '__main__':

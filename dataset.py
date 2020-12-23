@@ -48,7 +48,7 @@ class Dataset(torch.utils.data.Dataset):
 
         # load mask
         mask = self.load_mask(img, index)
-        
+
         # augment data
         if self.training:
             # random horizontal flip
@@ -137,7 +137,7 @@ class Dataset(torch.utils.data.Dataset):
                         w_start = random.randrange(0, i)
                     img = img[h_start:h_start + side,
                               w_start:w_start + side, ...]
-                              
+
                 else:
                     side = random.randrange(self.target_size, side)
                     j = (imgh - side)

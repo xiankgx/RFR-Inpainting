@@ -4,6 +4,7 @@ import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import make_grid, save_image
 
 from modules.RFRNet import RFRNet, VGG16FeatureExtractor
@@ -12,11 +13,21 @@ from utils.io import load_ckpt, save_ckpt
 
 class RFRNetModel():
     def __init__(self):
+        self.loss_weights = {
+            "tv": 0.1,
+            "style": 120,
+            "perceptual": 0.05,
+            "valid": 1,
+            "hole": 6
+        }
+        self.save_freq = 10000
+
         self.G = None
         self.lossNet = None
-        self.iter = None
         self.optm_G = None
         self.device = None
+
+        self.iter = None
         self.real_A = None
         self.real_B = None
         self.fake_B = None
@@ -63,17 +74,36 @@ class RFRNetModel():
             self.lossNet = nn.DataParallel(self.lossNet)
         return self
 
-    def train(self, train_loader, save_path, finetune=False, iters=450000):
-        #    writer = SummaryWriter(log_dir="log_info")
-        if hasattr(self.G, "module"):
-            self.G.module.train(finetune=finetune)
-        else:
-            self.G.train(finetune=finetune)
+    def train(self, train_loader, save_path, finetune=False, iters=450000,
+              fp16=False,
+              multi_gpu=True):
+        writer = SummaryWriter()
 
+        self.G.train(finetune=finetune)
         # Overwrite optimizer with a lower lr
         if finetune:
             self.optm_G = optim.Adam(filter(lambda p: p.requires_grad, self.G.parameters()),
                                      lr=5e-5)
+
+        self.got_amp = False
+        if fp16:
+            try:
+                print("Checking for Apex AMP support...")
+                from apex import amp
+                self.got_amp = True
+                print(" - [x] yes")
+            except ImportError:
+                print(" - [!] no")
+
+        if self.got_amp:
+            self.G, self.optm_G = amp.initialize(self.G, self.optm_G,
+                                                 opt_level="O1")
+            if self.lossNet is not None:
+                self.lossNet = amp.initialize(self.lossNet,
+                                              opt_level="O1")
+
+        if multi_gpu:
+            self.multi_gpu()
 
         print("Starting training from iteration:{:d}".format(self.iter))
         s_time = time.time()
@@ -84,17 +114,33 @@ class RFRNetModel():
 
                 self.forward(masked_images, masks, gt_images)
                 self.update_parameters()
+
+                writer.add_scalars("loss/G", self.metrics["lossG"],
+                                   global_step=self.iter)
                 self.iter += 1
 
-                if self.iter % 50 == 0:
+                if self.iter % 200 == 0:
                     e_time = time.time()
                     int_time = e_time - s_time
                     print("Iteration:%d, l1_loss:%.4f, time_taken:%.2f" %
                           (self.iter, self.l1_loss_val/50, int_time))
+
+                    writer.add_images("real_A", self.real_A,
+                                      global_step=self.iter)
+                    writer.add_images("mask", self.mask,
+                                      global_step=self.iter)
+                    writer.add_images("real_B", self.real_B,
+                                      global_step=self.iter)
+                    writer.add_images("fake_B", self.fake_B,
+                                      global_step=self.iter)
+                    writer.add_images("comp_B", self.comp_B,
+                                      global_step=self.iter)
+
+                    # Reset
                     s_time = time.time()
                     self.l1_loss_val = 0.0
 
-                if self.iter % 40000 == 0:
+                if self.iter % self.save_freq == 0:
                     if not os.path.exists('{:s}'.format(save_path)):
                         os.makedirs('{:s}'.format(save_path))
                     save_ckpt('{:s}/g_{:d}.pth'.format(save_path, self.iter),
@@ -119,7 +165,9 @@ class RFRNetModel():
         for items in test_loader:
             gt_images, masks = self.__cuda__(*items)
             masked_images = gt_images * masks
-            masks = torch.cat([masks]*3, dim=1)
+            # print(f">>> masks.shape: {masks.shape}")
+            if masks.size(1) == 1:
+                masks = torch.cat([masks]*3, dim=1)
 
             fake_B, mask = self.G(masked_images, masks)
             comp_B = fake_B * (1 - masks) + gt_images * masks
@@ -154,7 +202,11 @@ class RFRNetModel():
     def update_G(self):
         self.optm_G.zero_grad()
         loss_G = self.get_g_loss()
-        loss_G.backward()
+        if self.got_amp:
+            with amp.scale_loss(loss_G, self.optm_G) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            loss_G.backward()
         self.optm_G.step()
 
     def update_D(self):
@@ -177,13 +229,25 @@ class RFRNetModel():
         valid_loss = self.l1_loss(real_B, fake_B, self.mask)
         hole_loss = self.l1_loss(real_B, fake_B, (1 - self.mask))
 
-        loss_G = (tv_loss * 0.1
-                  + style_loss * 120
-                  + perceptual_loss * 0.05
-                  + valid_loss * 1
-                  + hole_loss * 6)
+        loss_G = (tv_loss * self.loss_weights["tv"]
+                  + style_loss * self.loss_weights["style"]
+                  + perceptual_loss * self.loss_weights["perceptual"]
+                  + valid_loss * self.loss_weights["valid"]
+                  + hole_loss * self.loss_weights["hole"])
 
         self.l1_loss_val += valid_loss.detach() + hole_loss.detach()
+
+        self.metrics = {
+            "lossG": {
+                "tv": tv_loss.item() * self.loss_weights["tv"],
+                "style": style_loss.item() * self.loss_weights["style"],
+                "perceptual": perceptual_loss.item() * self.loss_weights["perceptual"],
+                "valid": valid_loss.item() * self.loss_weights["valid"],
+                "hole": hole_loss.item() * self.loss_weights["hole"],
+                "sum": loss_G.item()
+            }
+        }
+
         return loss_G
 
     @staticmethod

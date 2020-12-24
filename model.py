@@ -10,6 +10,15 @@ from torchvision.utils import make_grid, save_image
 from modules.RFRNet import RFRNet, VGG16FeatureExtractor
 from utils.io import load_ckpt, save_ckpt
 
+GOT_AMP = False
+try:
+    print("Checking for Apex AMP support...")
+    from apex import amp
+    GOT_AMP = True
+    print(" - [x] yes")
+except ImportError:
+    print(" - [!] no")
+
 
 def gram_matrix(input_tensor):
     """
@@ -48,6 +57,10 @@ class RFRNetModel():
             "valid": 1,
             "hole": 6
         }
+        self.learning_rates = {
+            "train": 2e-4,
+            "finetune": 5e-5
+        }
         self.save_freq = 10000
 
         self.G = None
@@ -64,7 +77,8 @@ class RFRNetModel():
 
     def initialize_model(self, path=None, train=True):
         self.G = RFRNet()
-        self.optm_G = optim.Adam(self.G.parameters(), lr=2e-4)
+        self.optm_G = optim.Adam(self.G.parameters(),
+                                 lr=self.learning_rates["train"])
         if train:
             self.lossNet = VGG16FeatureExtractor()
 
@@ -74,7 +88,8 @@ class RFRNetModel():
                                    [('optimizer_G', self.optm_G)])
 
             if train:
-                self.optm_G = optim.Adam(self.G.parameters(), lr=2e-4)
+                self.optm_G = optim.Adam(self.G.parameters(),
+                                         lr=self.learning_rates["train"])
                 print('Model Initialized, iter: ', start_iter)
                 self.iter = start_iter
         except:
@@ -111,19 +126,10 @@ class RFRNetModel():
         # Overwrite optimizer with a lower lr
         if finetune:
             self.optm_G = optim.Adam(filter(lambda p: p.requires_grad, self.G.parameters()),
-                                     lr=5e-5)
+                                     lr=self.learning_rates["finetune"])
 
-        self.got_amp = False
-        if fp16:
-            try:
-                print("Checking for Apex AMP support...")
-                from apex import amp
-                self.got_amp = True
-                print(" - [x] yes")
-            except ImportError:
-                print(" - [!] no")
-
-        if self.got_amp:
+        self.fp16 = fp16 and GOT_AMP
+        if self.fp16:
             self.G, self.optm_G = amp.initialize(self.G, self.optm_G,
                                                  opt_level="O1")
             if self.lossNet is not None:
@@ -143,8 +149,10 @@ class RFRNetModel():
                 self.forward(masked_images, masks, gt_images)
                 self.update_parameters()
 
-                writer.add_scalars("loss/G", self.metrics["lossG"],
-                                   global_step=self.iter)
+                for k, v in self.metrics["lossG"].items():
+                    writer.add_scalar(f"lossG/{k}", v,
+                                      global_step=self.iter)
+
                 self.iter += 1
 
                 if self.iter % 200 == 0:
@@ -230,7 +238,7 @@ class RFRNetModel():
     def update_G(self):
         self.optm_G.zero_grad()
         loss_G = self.get_g_loss()
-        if self.got_amp:
+        if self.fp16:
             with amp.scale_loss(loss_G, self.optm_G) as scaled_loss:
                 scaled_loss.backward()
         else:
@@ -267,14 +275,15 @@ class RFRNetModel():
 
         self.metrics = {
             "lossG": {
+                "sum": loss_G.item(),
                 "tv": tv_loss.item() * self.loss_weights["tv"],
                 "style": style_loss.item() * self.loss_weights["style"],
                 "perceptual": perceptual_loss.item() * self.loss_weights["perceptual"],
                 "valid": valid_loss.item() * self.loss_weights["valid"],
                 "hole": hole_loss.item() * self.loss_weights["hole"],
-                "sum": loss_G.item()
             }
         }
+        print(f"#{self.iter:08d} - lossG: {self.metrics['lossG']}")
 
         return loss_G
 
@@ -312,8 +321,6 @@ class RFRNetModel():
 
     @staticmethod
     def TV_loss(x):
-        # h_x = x.size(2)
-        # w_x = x.size(3)
         h_tv = torch.mean(torch.abs(x[:, :, 1:, :] - x[:, :, :-1, :]))
         w_tv = torch.mean(torch.abs(x[:, :, :, 1:] - x[:, :, :, :-1]))
         return h_tv + w_tv
@@ -346,4 +353,4 @@ if __name__ == "__main__":
     gram_1 = torch.matmul(x, x.transpose(2, 1))/(c * w * h)
     gram_2 = gram_matrix(x_clone)
 
-    assert torch.allclose(gram_1, gram_2), "gram_1 ! gram_2"
+    assert torch.allclose(gram_1, gram_2), "gram_1 != gram_2"

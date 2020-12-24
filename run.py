@@ -22,12 +22,9 @@ def run():
     parser.add_argument('--n_threads', type=int, default=6)
     parser.add_argument('--finetune', action='store_true')
     parser.add_argument('--test', action='store_true')
-    # parser.add_argument('--gpu_id', type=str, default="0")
     parser.add_argument('--multi_gpu', action='store_true')
     parser.add_argument('--fp16', action='store_true')
     args = parser.parse_args()
-
-    # os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
 
     model = RFRNetModel()
     if args.test:

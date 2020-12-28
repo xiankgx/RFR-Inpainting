@@ -2,6 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# epsilon = 1e-7
+epsilon = 1e-6
+
 
 class KnowledgeConsistentAttention(nn.Module):
     def __init__(self, patch_size=3, propagate_size=3, stride=1):
@@ -31,27 +34,27 @@ class KnowledgeConsistentAttention(nn.Module):
         for i in range(bz):
             feature_map = foreground[i:i+1]
 
-            conv_kernels = conv_kernels_all[i] + 0.0000001
-            norm_factor = torch.sum(
-                conv_kernels**2, [1, 2, 3], keepdim=True) ** 0.5
+            conv_kernels = conv_kernels_all[i] + epsilon
+            norm_factor = torch.sum(conv_kernels ** 2, [1, 2, 3],
+                                    keepdim=True) ** 0.5
             conv_kernels = conv_kernels/norm_factor
 
             conv_result = F.conv2d(feature_map, conv_kernels,
                                    padding=self.patch_size//2)
-
             if self.propagate_size != 1:
-                if self.prop_kernels is None:
-                    self.prop_kernels = torch.ones(
-                        [conv_result.size(1), 1, self.propagate_size, self.propagate_size])
-                    self.prop_kernels.requires_grad = False
-                    self.prop_kernels = self.prop_kernels.cuda()
+                # if self.prop_kernels is None:
+                #     self.prop_kernels = torch.ones(
+                #         [conv_result.size(1), 1, self.propagate_size, self.propagate_size])
+                #     self.prop_kernels.requires_grad = False
+                #     self.prop_kernels = self.prop_kernels.cuda()
 
                 conv_result = F.avg_pool2d(conv_result, 3, 1, padding=1) * 9
 
             attention_scores = F.softmax(conv_result, dim=1)
             if self.att_scores_prev is not None:
-                attention_scores = (self.att_scores_prev[i:i+1] * self.masks_prev[i:i+1] + attention_scores * (torch.abs(self.ratio) + 1e-7)) \
-                    / (self.masks_prev[i:i+1] + (torch.abs(self.ratio) + 1e-7))
+                attention_scores = \
+                    (self.att_scores_prev[i:i+1] * self.masks_prev[i:i+1] + attention_scores * (torch.abs(self.ratio) + epsilon)) \
+                    / (self.masks_prev[i:i+1] + (torch.abs(self.ratio) + epsilon))
             att_score.append(attention_scores)
 
             feature_map = F.conv_transpose2d(attention_scores, conv_kernels,

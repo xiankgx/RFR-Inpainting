@@ -29,14 +29,15 @@ class PartialConv2d(nn.Conv2d):
         super(PartialConv2d, self).__init__(*args, **kwargs)
 
         if self.multi_channel:
-            self.weight_maskUpdater = torch.ones(
-                self.out_channels, self.in_channels, self.kernel_size[0], self.kernel_size[1])
+            self.weight_maskUpdater = torch.ones(self.out_channels, self.in_channels,
+                                                 self.kernel_size[0], self.kernel_size[1])
         else:
-            self.weight_maskUpdater = torch.ones(
-                1, 1, self.kernel_size[0], self.kernel_size[1])
+            self.weight_maskUpdater = torch.ones(1, 1,
+                                                 self.kernel_size[0], self.kernel_size[1])
 
-        self.slide_winsize = self.weight_maskUpdater.shape[1] * \
-            self.weight_maskUpdater.shape[2] * self.weight_maskUpdater.shape[3]
+        self.slide_winsize = self.weight_maskUpdater.shape[1] \
+            * self.weight_maskUpdater.shape[2] \
+            * self.weight_maskUpdater.shape[3]
 
         self.last_size = (None, None)
         self.update_mask = None
@@ -54,17 +55,20 @@ class PartialConv2d(nn.Conv2d):
                 if mask is None:
                     # if mask is not provided, create a mask
                     if self.multi_channel:
-                        mask = torch.ones(
-                            input.data.shape[0], input.data.shape[1], input.data.shape[2], input.data.shape[3]).to(input)
+                        mask = torch.ones(input.data.shape[0], input.data.shape[1],
+                                          input.data.shape[2], input.data.shape[3]).to(input)
                     else:
-                        mask = torch.ones(
-                            1, 1, input.data.shape[2], input.data.shape[3]).to(input)
+                        mask = torch.ones(1, 1,
+                                          input.data.shape[2], input.data.shape[3]).to(input)
 
-                self.update_mask = F.conv2d(mask, self.weight_maskUpdater, bias=None,
-                                            stride=self.stride, padding=self.padding, dilation=self.dilation, groups=1)
+                self.update_mask = F.conv2d(mask, self.weight_maskUpdater,
+                                            bias=None,
+                                            stride=self.stride, padding=self.padding,
+                                            dilation=self.dilation,
+                                            groups=1)
 
-                self.mask_ratio = self.slide_winsize / \
-                    (self.update_mask + epsilon)
+                self.mask_ratio = self.slide_winsize \
+                    / (self.update_mask + epsilon)
                 # self.mask_ratio = torch.max(self.update_mask)/(self.update_mask + epsilon)
                 self.update_mask = torch.clamp(self.update_mask, 0, 1)
                 self.mask_ratio = torch.mul(self.mask_ratio, self.update_mask)
@@ -78,8 +82,8 @@ class PartialConv2d(nn.Conv2d):
 
         if self.bias is not None:
             bias_view = self.bias.view(1, self.out_channels, 1, 1)
-            output = torch.mul(raw_out - bias_view,
-                               self.mask_ratio) + bias_view
+            output = torch.mul(raw_out - bias_view, self.mask_ratio) \
+                + bias_view
             output = torch.mul(output, self.update_mask)
         else:
             output = torch.mul(raw_out, self.mask_ratio)

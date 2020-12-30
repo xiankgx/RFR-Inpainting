@@ -200,7 +200,7 @@ class RFRNet(nn.Module):
 
         self.out = nn.Conv2d(64, 3, 3, 1, 1, bias=False)
 
-    def forward(self, in_image, mask):
+    def forward(self, in_image, mask, recurrence=8):
         x1, m1 = self.Pconv1(in_image, mask)
         x1 = F.relu(self.bn1(x1), inplace=True)
         x1, m1 = self.Pconv2(x1, m1)
@@ -217,7 +217,7 @@ class RFRNet(nn.Module):
         assert not torch.any(torch.isnan(x2))
         assert not torch.any(torch.isnan(m2))
 
-        for i in range(6):
+        for i in range(recurrence):
             x2, m2 = self.Pconv21(x2, m2)
             x2, m2 = self.Pconv22(x2, m2)
             x2 = F.leaky_relu(self.bn2(x2), inplace=True)

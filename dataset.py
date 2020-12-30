@@ -182,7 +182,7 @@ class Dataset(torch.utils.data.Dataset):
         return []
 
 
-def generate_stroke_mask(im_size, max_parts=15, maxVertex=25, maxLength=100, maxBrushWidth=24, maxAngle=360):
+def generate_stroke_mask(im_size, max_parts=15, maxVertex=25, maxLength=100 * 1.5, maxBrushWidth=24 * 1.5, maxAngle=360):
     mask = np.zeros((im_size[0], im_size[1], 1), dtype=np.float32)
     parts = random.randint(1, max_parts)
     for i in range(parts):

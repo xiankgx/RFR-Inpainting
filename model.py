@@ -139,7 +139,7 @@ class RFRNetModel():
         if multi_gpu:
             self.multi_gpu()
 
-        print("Starting training from iteration:{:d}".format(self.iter))
+        print("Starting training from iteration: {:d}, finetuning: {}".format(self.iter, finetune))
         s_time = time.time()
         while self.iter < iters:
             for items in train_loader:
@@ -179,14 +179,14 @@ class RFRNetModel():
                 if self.iter % self.save_freq == 0:
                     if not os.path.exists('{:s}'.format(save_path)):
                         os.makedirs('{:s}'.format(save_path))
-                    save_ckpt('{:s}/g_{:d}.pth'.format(save_path, self.iter),
+                    save_ckpt('{:s}/g_{:d}{}.pth'.format(save_path, self.iter, "_finetune" if finetune else ""),
                               [('generator', self.G)],
                               [('optimizer_G', self.optm_G)],
                               self.iter)
 
         if not os.path.exists('{:s}'.format(save_path)):
             os.makedirs('{:s}'.format(save_path))
-            save_ckpt('{:s}/g_{:s}.pth'.format(save_path, "final"),
+            save_ckpt('{:s}/g_{:s}{}.pth'.format(save_path, "final", "_finetune" if finetune else ""),
                       [('generator', self.G)],
                       [('optimizer_G', self.optm_G)],
                       self.iter)

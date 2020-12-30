@@ -24,7 +24,7 @@ def save_ckpt(ckpt_name, models, optimizers, n_iter):
 
 
 def load_ckpt(ckpt_name, models, optimizers=None):
-    ckpt_dict = torch.load(ckpt_name)
+    ckpt_dict = torch.load(ckpt_name, map_location="cpu")
 
     for prefix, model in models:
         assert isinstance(model, nn.Module)

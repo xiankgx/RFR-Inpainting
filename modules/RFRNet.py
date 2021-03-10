@@ -79,7 +79,7 @@ class RFRModule(nn.Module):
 
     def __init__(self, layer_size=6, in_channel=64):
         super(RFRModule, self).__init__()
-        self.freeze_enc_bn = False
+        # self.freeze_enc_bn = False  # unused
         self.layer_size = layer_size
 
         for i in range(3):
@@ -200,7 +200,7 @@ class RFRNet(nn.Module):
 
         self.out = nn.Conv2d(64, 3, 3, 1, 1, bias=False)
 
-    def forward(self, in_image, mask, recurrence=8):
+    def forward(self, in_image, mask, recurrence=6):
         x1, m1 = self.Pconv1(in_image, mask)
         x1 = F.relu(self.bn1(x1), inplace=True)
         x1, m1 = self.Pconv2(x1, m1)

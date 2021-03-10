@@ -4,20 +4,22 @@ import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.cuda.amp import GradScaler, autocast
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import make_grid, save_image
 
 from modules.RFRNet import RFRNet, VGG16FeatureExtractor
+from modules.RFRNetv2 import RFRNetv6
 from utils.io import load_ckpt, save_ckpt
 
-GOT_AMP = False
-try:
-    print("Checking for Apex AMP support...")
-    from apex import amp
-    GOT_AMP = True
-    print(" - [x] yes")
-except ImportError:
-    print(" - [!] no")
+# GOT_AMP = False
+# try:
+#     print("Checking for Apex AMP support...")
+#     from apex import amp
+#     GOT_AMP = True
+#     print(" - [x] yes")
+# except ImportError:
+#     print(" - [!] no")
 
 
 def gram_matrix(input_tensor):
@@ -61,7 +63,7 @@ class RFRNetModel():
             "train": 2e-4,
             "finetune": 5e-5
         }
-        self.save_freq = 10000
+        self.save_freq = 5000
 
         self.G = None
         self.lossNet = None
@@ -76,7 +78,9 @@ class RFRNetModel():
         self.l1_loss_val = 0.0
 
     def initialize_model(self, path=None, train=True):
-        self.G = RFRNet()
+        # self.G = RFRNet()
+        self.G = RFRNetv6()
+        self.additional_data = None
         self.optm_G = optim.Adam(self.G.parameters(),
                                  lr=self.learning_rates["train"])
         if train:
@@ -128,18 +132,22 @@ class RFRNetModel():
             self.optm_G = optim.Adam(filter(lambda p: p.requires_grad, self.G.parameters()),
                                      lr=self.learning_rates["finetune"])
 
-        self.fp16 = fp16 and GOT_AMP
+        # self.fp16 = fp16 and GOT_AMP
+        self.fp16 = fp16
         if self.fp16:
-            self.G, self.optm_G = amp.initialize(self.G, self.optm_G,
-                                                 opt_level="O1")
-            if self.lossNet is not None:
-                self.lossNet = amp.initialize(self.lossNet,
-                                              opt_level="O1")
+            # self.G, self.optm_G = amp.initialize(self.G, self.optm_G,
+            #                                      opt_level="O1")
+            # if self.lossNet is not None:
+            #     self.lossNet = amp.initialize(self.lossNet,
+            #                                   opt_level="O1")
+            print("Creating grad scaler...")
+            self.grad_scaler = GradScaler()
 
         if multi_gpu:
             self.multi_gpu()
 
-        print("Starting training from iteration: {:d}, finetuning: {}".format(self.iter, finetune))
+        print("Starting training from iteration: {:d}, finetuning: {}".format(
+            self.iter, finetune))
         s_time = time.time()
         while self.iter < iters:
             for items in train_loader:
@@ -224,12 +232,21 @@ class RFRNetModel():
                 save_image(grid, file_path)
 
     def forward(self, masked_image, mask, gt_image):
-        self.real_A = masked_image
-        self.real_B = gt_image
-        self.mask = mask
-        fake_B, _ = self.G(masked_image, mask)
-        self.fake_B = fake_B
-        self.comp_B = self.fake_B * (1 - mask) + self.real_B * mask
+        with autocast(self.fp16):
+            self.real_A = masked_image
+            self.real_B = gt_image
+            self.mask = mask
+
+            # model's internal threads won't autocast.  The main thread's autocast state has no effect.
+            # Ref: https://pytorch.org/docs/stable/notes/amp_examples.html#typical-mixed-precision-training
+            fake_B, additional_data = self.G(masked_image, mask,
+                                             fp16=self.fp16)
+            if additional_data is not None:
+                self.additional_data = additional_data
+            assert not torch.isnan(fake_B).any()
+
+            self.fake_B = fake_B
+            self.comp_B = self.fake_B * (1 - mask) + self.real_B * mask
 
     def update_parameters(self):
         self.update_G()
@@ -237,13 +254,22 @@ class RFRNetModel():
 
     def update_G(self):
         self.optm_G.zero_grad()
-        loss_G = self.get_g_loss()
+
+        with autocast(self.fp16):
+            loss_G = self.get_g_loss()
+        # if self.fp16:
+        #     with amp.scale_loss(loss_G, self.optm_G) as scaled_loss:
+        #         scaled_loss.backward()
+        # else:
+        #     loss_G.backward()
+
         if self.fp16:
-            with amp.scale_loss(loss_G, self.optm_G) as scaled_loss:
-                scaled_loss.backward()
+            self.grad_scaler.scale(loss_G).backward()
+            self.grad_scaler.step(self.optm_G)
+            self.grad_scaler.update()
         else:
             loss_G.backward()
-        self.optm_G.step()
+            self.optm_G.step()
 
     def update_D(self):
         return
@@ -263,6 +289,11 @@ class RFRNetModel():
         perceptual_loss = self.perceptual_loss(real_B_feats, fake_B_feats) \
             + self.perceptual_loss(real_B_feats, comp_B_feats)
         valid_loss = self.l1_loss(real_B, fake_B, self.mask)
+
+        if self.additional_data is not None:
+            for i, (im, m) in enumerate(zip(*self.additional_data)):
+                valid_loss += self.l1_loss(real_B, im, m)
+
         hole_loss = self.l1_loss(real_B, fake_B, (1 - self.mask))
 
         loss_G = (tv_loss * self.loss_weights["tv"]

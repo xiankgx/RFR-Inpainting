@@ -389,18 +389,14 @@ class _KnowledgeConsistentNonLocalBlockND(nn.Module):
         theta_x = theta_x.permute(0, 2, 1)
         phi_x = self.phi(x).view(batch_size, self.inter_channels, -1)
 
-        assert not torch.isinf(theta_x).any()
-        assert not torch.isinf(phi_x).any()
-        assert not torch.isnan(theta_x).any()
-        assert not torch.isnan(phi_x).any()
+        # assert not torch.isinf(theta_x).any()
+        # assert not torch.isinf(phi_x).any()
+        # assert not torch.isnan(theta_x).any()
+        # assert not torch.isnan(phi_x).any()
 
         f = torch.matmul(theta_x, phi_x)
-        # input = torch.zeros(batch_size, x.shape[-2] * x.shape[-1], self.inter_channels).type(torch.float32).to(x)
-        # f = torch.baddbmm(input, theta_x, phi_x,
-        #                  beta=0, alpha=1, out=None)
-        # print(f.shape)
 
-        assert not torch.isinf(f).any(), f.dtype
+        # assert not torch.isinf(f).any(), f.dtype
 
         if self.smooth_attention_map:
             f_smooth = F.avg_pool2d(f, self.smooth_atention_map_kernel_size,
@@ -555,12 +551,13 @@ class VGG16FeatureExtractor(nn.Module):
             for param in getattr(self, 'enc_{:d}'.format(i + 1)).parameters():
                 param.requires_grad = False
 
-    def forward(self, image):
-        results = [image]
-        for i in range(3):
-            func = getattr(self, 'enc_{:d}'.format(i + 1))
-            results.append(func(results[-1]))
-        return results[1:]
+    def forward(self, image, fp16=False):
+        with autocast(fp16):
+            results = [image]
+            for i in range(3):
+                func = getattr(self, 'enc_{:d}'.format(i + 1))
+                results.append(func(results[-1]))
+            return results[1:]
 
 
 class RFRNetv2(nn.Module):

@@ -68,7 +68,7 @@ class PartialConv2d(nn.Conv2d):
                                             stride=self.stride, padding=self.padding, dilation=self.dilation, groups=1)
 
                 # for mixed precision training, change 1e-8 to 1e-6
-                self.mask_ratio = self.slide_winsize/(self.update_mask + 1e-6)
+                self.mask_ratio = self.slide_winsize/(self.update_mask + 1e-4)
                 # self.mask_ratio = torch.max(self.update_mask)/(self.update_mask + 1e-8)
                 self.update_mask = torch.clamp(self.update_mask, 0, 1)
                 self.mask_ratio = torch.mul(self.mask_ratio, self.update_mask)

@@ -8,8 +8,8 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import make_grid, save_image
 
-from modules.RFRNet import RFRNet, VGG16FeatureExtractor
-from modules.RFRNetv2 import RFRNetv6
+from modules.RFRNet import RFRNet
+from modules.RFRNetv2 import RFRNetv6, VGG16FeatureExtractor
 from utils.io import load_ckpt, save_ckpt
 
 # GOT_AMP = False
@@ -243,7 +243,7 @@ class RFRNetModel():
                                              fp16=self.fp16)
             if additional_data is not None:
                 self.additional_data = additional_data
-            assert not torch.isnan(fake_B).any()
+            # assert not torch.isnan(fake_B).any()
 
             self.fake_B = fake_B
             self.comp_B = self.fake_B * (1 - mask) + self.real_B * mask
@@ -279,9 +279,9 @@ class RFRNetModel():
         fake_B = self.fake_B
         comp_B = self.comp_B
 
-        real_B_feats = self.lossNet(real_B)
-        fake_B_feats = self.lossNet(fake_B)
-        comp_B_feats = self.lossNet(comp_B)
+        real_B_feats = self.lossNet(real_B, fp16=self.fp16)
+        fake_B_feats = self.lossNet(fake_B, fp16=self.fp16)
+        comp_B_feats = self.lossNet(comp_B, fp16=self.fp16)
 
         tv_loss = self.TV_loss(comp_B * (1 - self.mask))
         style_loss = self.style_loss(real_B_feats, fake_B_feats) \

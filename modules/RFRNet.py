@@ -6,8 +6,8 @@ from torchvision import models
 from modules.Attention import AttentionModule
 from modules.partialconv2d import PartialConv2d
 
-# epsilon = 1e-7
-epsilon = 1e-6  # Avoid overflow when using mixed precision training
+epsilon = 1e-7
+# epsilon = 1e-6  # Avoid overflow when using mixed precision training
 
 
 class VGG16FeatureExtractor(nn.Module):
@@ -200,7 +200,7 @@ class RFRNet(nn.Module):
 
         self.out = nn.Conv2d(64, 3, 3, 1, 1, bias=False)
 
-    def forward(self, in_image, mask, recurrence=8):
+    def forward(self, in_image, mask, recurrence=10):
         x1, m1 = self.Pconv1(in_image, mask)
         x1 = F.relu(self.bn1(x1), inplace=True)
         x1, m1 = self.Pconv2(x1, m1)
@@ -265,7 +265,9 @@ class RFRNet(nn.Module):
 
         output = self.out(x6)
 
-        return output, None
+        # return output, None
+        # return torch.clamp(output, 0.0, 1.0), None
+        return torch.sigmoid(output), None
 
     def train(self, mode=True, finetune=False):
         super().train(mode)

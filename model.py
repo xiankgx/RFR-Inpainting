@@ -7,8 +7,11 @@ import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import make_grid, save_image
 
+from modules.discriminator import NLayerDiscriminator, UNet
 from modules.RFRNet import RFRNet, VGG16FeatureExtractor
 from utils.io import load_ckpt, save_ckpt
+
+bce_with_logits_loss = nn.BCEWithLogitsLoss()
 
 GOT_AMP = False
 try:
@@ -53,9 +56,10 @@ class RFRNetModel():
         self.loss_weights = {
             "tv": 0.1,
             "style": 120,
-            "perceptual": 0.05,
+            "perceptual": 0.05,  # from 0.05
             "valid": 1,
-            "hole": 6
+            "hole": 6,
+            # "adv": 0.1
         }
         self.learning_rates = {
             "train": 2e-4,
@@ -64,8 +68,10 @@ class RFRNetModel():
         self.save_freq = 10000
 
         self.G = None
+        # self.D = None
         self.lossNet = None
         self.optm_G = None
+        # self.optm_D = None
         self.device = None
 
         self.iter = None
@@ -78,9 +84,17 @@ class RFRNetModel():
     def initialize_model(self, path=None, train=True):
         self.G = RFRNet()
         self.optm_G = optim.Adam(self.G.parameters(),
-                                 lr=self.learning_rates["train"])
+                                 lr=self.learning_rates["train"],
+                                #  betas=(0.5, 0.9)
+                                 )
         if train:
             self.lossNet = VGG16FeatureExtractor()
+
+            # self.D = UNet()
+            # #self.D = NLayerDiscriminator(3)
+            # self.optm_D = optim.Adam(self.D.parameters(),
+            #                          lr=self.learning_rates["train"],
+            #                          betas=(0.5, 0.9))
 
         try:
             start_iter = load_ckpt(path,
@@ -89,7 +103,10 @@ class RFRNetModel():
 
             if train:
                 self.optm_G = optim.Adam(self.G.parameters(),
-                                         lr=self.learning_rates["train"])
+                                         lr=self.learning_rates["train"],
+                                        #  betas=(0.5, 0.9)
+                                         )
+                                         
                 print('Model Initialized, iter: ', start_iter)
                 self.iter = start_iter
         except:
@@ -106,6 +123,8 @@ class RFRNetModel():
             self.G.cuda()
             if self.lossNet is not None:
                 self.lossNet.cuda()
+            # if self.D is not None:
+            #     self.D.cuda()
         else:
             self.device = torch.device("cpu")
         return self
@@ -115,6 +134,8 @@ class RFRNetModel():
         self.G = nn.DataParallel(self.G)
         if self.lossNet is not None:
             self.lossNet = nn.DataParallel(self.lossNet)
+        # if self.D is not None:
+        #     self.D = nn.DataParallel(self.D)
         return self
 
     def train(self, train_loader, save_path, finetune=False, iters=450000,
@@ -126,7 +147,9 @@ class RFRNetModel():
         # Overwrite optimizer with a lower lr
         if finetune:
             self.optm_G = optim.Adam(filter(lambda p: p.requires_grad, self.G.parameters()),
-                                     lr=self.learning_rates["finetune"])
+                                     lr=self.learning_rates["finetune"],
+                                    #  betas=(0.5, 0.9)
+                                     )
 
         self.fp16 = fp16 and GOT_AMP
         if self.fp16:
@@ -135,11 +158,15 @@ class RFRNetModel():
             if self.lossNet is not None:
                 self.lossNet = amp.initialize(self.lossNet,
                                               opt_level="O1")
+            # if self.D is not None:
+            #     self.D = amp.initialize(self.D,
+            #                             opt_level="O1")
 
         if multi_gpu:
             self.multi_gpu()
 
-        print("Starting training from iteration: {:d}, finetuning: {}".format(self.iter, finetune))
+        print("Starting training from iteration: {:d}, finetuning: {}".format(
+            self.iter, finetune))
         s_time = time.time()
         while self.iter < iters:
             for items in train_loader:
@@ -149,6 +176,9 @@ class RFRNetModel():
                 self.forward(masked_images, masks, gt_images)
                 self.update_parameters()
 
+                # for k, v in self.metrics["lossD"].items():
+                #     writer.add_scalar(f"lossD/{k}", v,
+                #                       global_step=self.iter)
                 for k, v in self.metrics["lossG"].items():
                     writer.add_scalar(f"lossG/{k}", v,
                                       global_step=self.iter)
@@ -231,11 +261,18 @@ class RFRNetModel():
         self.fake_B = fake_B
         self.comp_B = self.fake_B * (1 - mask) + self.real_B * mask
 
+        # self.dis_fake = self.D(self.comp_B.detach())
+        # self.dis_real = self.D(self.real_B)
+
     def update_parameters(self):
+        self.metrics = {}
+
+        # self.update_D()
         self.update_G()
-        self.update_D()
 
     def update_G(self):
+        # self.dis_fake = self.D(self.comp_B)
+
         self.optm_G.zero_grad()
         loss_G = self.get_g_loss()
         if self.fp16:
@@ -245,8 +282,33 @@ class RFRNetModel():
             loss_G.backward()
         self.optm_G.step()
 
-    def update_D(self):
-        return
+    # def update_D(self):
+    #     self.optm_D.zero_grad()
+    #     loss_D = self.get_d_loss()
+    #     if self.fp16:
+    #         with amp.scale_loss(loss_D, self.optm_D) as scaled_loss:
+    #             scaled_loss.backward()
+    #     else:
+    #         loss_D.backward()
+    #     self.optm_D.step()
+
+    # def get_d_loss(self):
+    #     loss_fake = bce_with_logits_loss(self.dis_fake,
+    #                                      self.mask[:, [0], :, :])
+    #     #loss_fake = bce_with_logits_loss(self.dis_fake,
+    #     #                                 torch.zeros_like(self.dis_fake))
+    #     loss_real = bce_with_logits_loss(self.dis_real,
+    #                                      torch.ones_like(self.dis_real))
+    #     lossD = loss_fake + loss_real
+
+    #     self.metrics["lossD"] = {
+    #         "sum": lossD.item(),
+    #         "fake": loss_fake.item(),
+    #         "real": loss_real.item()
+    #     }
+    #     print(f"#{self.iter:08d} - lossD: {self.metrics['lossD']}")
+
+    #     return lossD
 
     def get_g_loss(self):
         real_B = self.real_B
@@ -264,6 +326,8 @@ class RFRNetModel():
             + self.perceptual_loss(real_B_feats, comp_B_feats)
         valid_loss = self.l1_loss(real_B, fake_B, self.mask)
         hole_loss = self.l1_loss(real_B, fake_B, (1 - self.mask))
+        # adv_loss = bce_with_logits_loss(self.dis_fake,
+        #                                 torch.ones_like(self.dis_fake))
 
         loss_G = (tv_loss * self.loss_weights["tv"]
                   + style_loss * self.loss_weights["style"]
@@ -273,15 +337,14 @@ class RFRNetModel():
 
         self.l1_loss_val += valid_loss.detach() + hole_loss.detach()
 
-        self.metrics = {
-            "lossG": {
-                "sum": loss_G.item(),
-                "tv": tv_loss.item() * self.loss_weights["tv"],
-                "style": style_loss.item() * self.loss_weights["style"],
-                "perceptual": perceptual_loss.item() * self.loss_weights["perceptual"],
-                "valid": valid_loss.item() * self.loss_weights["valid"],
-                "hole": hole_loss.item() * self.loss_weights["hole"],
-            }
+        self.metrics["lossG"] = {
+            "sum": loss_G.item(),
+            "tv": tv_loss.item() * self.loss_weights["tv"],
+            "style": style_loss.item() * self.loss_weights["style"],
+            "perceptual": perceptual_loss.item() * self.loss_weights["perceptual"],
+            "valid": valid_loss.item() * self.loss_weights["valid"],
+            "hole": hole_loss.item() * self.loss_weights["hole"],
+            # "adv": adv_loss.item() * self.loss_weights["adv"],
         }
         print(f"#{self.iter:08d} - lossG: {self.metrics['lossG']}")
 

@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# epsilon = 1e-7
-epsilon = 1e-6
+epsilon = 1e-7
+# epsilon = 1e-6
 
 
 class KnowledgeConsistentAttention(nn.Module):

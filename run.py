@@ -3,8 +3,8 @@ import os
 
 from torch.utils.data import DataLoader
 
-# from dataset import Dataset
-from dataset import DatasetV2 as Dataset
+from dataset import Dataset
+# from dataset import DatasetV2 as Dataset
 from model import RFRNetModel
 
 

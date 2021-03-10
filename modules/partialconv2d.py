@@ -10,8 +10,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-# epsilon = 1e-8
-epsilon = 1e-6  # Avoid overflow when using mixed precision training
+epsilon = 1e-8
+# epsilon = 1e-6  # Avoid overflow when using mixed precision training
 
 
 class PartialConv2d(nn.Conv2d):

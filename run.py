@@ -49,7 +49,8 @@ def run():
                                         mask_reverse=True),
                                 batch_size=args.batch_size,
                                 shuffle=True,
-                                num_workers=args.n_threads)
+                                num_workers=args.n_threads,
+                                pin_memory=True)
 
         model.train(dataloader, args.model_save_path,
                     args.finetune, args.num_iters,

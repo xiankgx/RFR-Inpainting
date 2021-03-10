@@ -175,9 +175,9 @@ class RFRNetModel():
                                       global_step=self.iter)
                     writer.add_images("real_B", self.real_B,
                                       global_step=self.iter)
-                    writer.add_images("fake_B", self.fake_B,
+                    writer.add_images("fake_B", torch.clamp(self.fake_B, 0, 1),
                                       global_step=self.iter)
-                    writer.add_images("comp_B", self.comp_B,
+                    writer.add_images("comp_B", torch.clamp(self.comp_B, 0, 1),
                                       global_step=self.iter)
 
                     # Reset

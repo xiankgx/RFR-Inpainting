@@ -9,7 +9,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import make_grid, save_image
 
 from modules.RFRNet import RFRNet
-from modules.RFRNetv2 import RFRNetv6, VGG16FeatureExtractor
+from modules.RFRNetv2 import RFRNetv7, VGG16FeatureExtractor
 from utils.io import load_ckpt, save_ckpt
 
 # GOT_AMP = False
@@ -79,7 +79,7 @@ class RFRNetModel():
 
     def initialize_model(self, path=None, train=True):
         # self.G = RFRNet()
-        self.G = RFRNetv6()
+        self.G = RFRNetv7()
         self.additional_data = None
         self.optm_G = optim.Adam(self.G.parameters(),
                                  lr=self.learning_rates["train"])
@@ -179,6 +179,13 @@ class RFRNetModel():
                                       global_step=self.iter)
                     writer.add_images("comp_B", torch.clamp(self.comp_B, 0, 1),
                                       global_step=self.iter)
+
+                    if self.additional_data is not None:
+                        for i in range(len(self.additional_data[0])):
+                            writer.add_images(f"recur_im_{i}", torch.clamp(self.additional_data[0][i], 0, 1),
+                                              self.iter)
+                            writer.add_images(f"recur_m_{i}", self.additional_data[1][i],
+                                              self.iter)
 
                     # Reset
                     s_time = time.time()

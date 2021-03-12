@@ -226,69 +226,83 @@ class NONLocalBlock2D(_NonLocalBlockND):
 
 
 class KnowledgeConsistentAttention(nn.Module):
-    def __init__(self, patch_size=1, propagate_size=3, stride=1):
+    def __init__(self, in_channels, propagate_size=3):
         super(KnowledgeConsistentAttention, self).__init__()
 
-        self.patch_size = patch_size
+        # Attention map smoothing
         self.propagate_size = propagate_size
-        # self.stride = stride  # unused
-        self.prop_kernels = None
 
         self.att_scores_prev = None
         self.masks_prev = None
         self.ratio = nn.Parameter(torch.ones(1))
 
-    def reset(self):
+    def initialize_knowledge(self):
         self.att_scores_prev = None
         self.masks_prev = None
 
     def forward(self, foreground, masks):
         bz, nc, h, w = foreground.size()
-        if masks.size(3) != foreground.size(3):
-            masks = F.interpolate(masks, foreground.size()[2:])
+        if masks.shape[-2:] != foreground.shape[-2:]:
+            masks = F.interpolate(masks, foreground.shape[-2:])
 
+        # Background == foreground
         background = foreground.clone()
+
+        # View background as tiles of (1, 1)
         conv_kernels_all = background.view(bz, nc, w * h, 1, 1)
+
+        # batch of (c_out (w * h), c_in (nc), 1, 1)
         conv_kernels_all = conv_kernels_all.permute(0, 2, 1, 3, 4)
         # print(f"conv_kernels_all.shape: {conv_kernels_all.shape}")
+
         output_tensor = []
         att_score = []
 
+        # Per-sample processing
         for i in range(bz):
             feature_map = foreground[i:i+1]
             # print(f"feature_map.shape: {feature_map.shape}")
 
+            # Normalize
             conv_kernels = conv_kernels_all[i] + epsilon
             norm_factor = torch.sum(conv_kernels ** 2, [1, 2, 3],
                                     keepdim=True) ** 0.5
             conv_kernels = conv_kernels/norm_factor
             # print(f"conv_kernels.shape: {conv_kernels.shape}")
 
+            # Perform 1x1 patch matching with convolution
             conv_result = F.conv2d(feature_map, conv_kernels,
-                                   padding=self.patch_size//2
-                                   )
+                                   stride=1,
+                                   padding=0)
             # print(f"conv_result.shape: {conv_result.shape}")
+
+            # Smoothen output map
             if self.propagate_size != 1:
                 conv_result = F.avg_pool2d(conv_result, 3, 1, padding=1) * 9
 
+            # Softmax to convert to probabilities
             attention_scores = F.softmax(conv_result, dim=1)
             # print(f"attention_scores.shape: {attention_scores.shape}")
 
+            # Weighted moving average with learnable weight (self.ratio)
             if self.att_scores_prev is not None:
                 attention_scores = \
                     (self.att_scores_prev[i:i+1] * self.masks_prev[i:i+1] + attention_scores * (torch.abs(self.ratio) + epsilon)) \
                     / (self.masks_prev[i:i+1] + (torch.abs(self.ratio) + epsilon))
+
             att_score.append(attention_scores)
 
+            # Deconvolution to reverse the process
             feature_map = F.conv_transpose2d(attention_scores, conv_kernels,
                                              stride=1,
-                                             padding=self.patch_size//2
-                                             )
+                                             padding=0)
             final_output = feature_map
             output_tensor.append(final_output)
 
+        # Save state
         self.att_scores_prev = torch.cat(att_score, dim=0).view(bz, h*w, h, w)
         self.masks_prev = masks.view(bz, 1, h, w)
+
         return torch.cat(output_tensor, dim=0)
 
 
@@ -387,16 +401,10 @@ class _KnowledgeConsistentNonLocalBlockND(nn.Module):
 
         theta_x = self.theta(x).view(batch_size, self.inter_channels, -1)
         theta_x = theta_x.permute(0, 2, 1)
+
         phi_x = self.phi(x).view(batch_size, self.inter_channels, -1)
 
-        # assert not torch.isinf(theta_x).any()
-        # assert not torch.isinf(phi_x).any()
-        # assert not torch.isnan(theta_x).any()
-        # assert not torch.isnan(phi_x).any()
-
         f = torch.matmul(theta_x, phi_x)
-
-        # assert not torch.isinf(f).any(), f.dtype
 
         if self.smooth_attention_map:
             f_smooth = F.avg_pool2d(f, self.smooth_atention_map_kernel_size,
@@ -453,8 +461,8 @@ class AttentionModule(nn.Module):
         super(AttentionModule, self).__init__()
         self.att = att_module(inchannel)
 
-        self.knowledge_consistent_attention = isinstance(
-            self.att, KnowledgeConsistentNONLocalBlock2D)
+        self.knowledge_consistent_attention = isinstance(self.att,
+                                                         (KnowledgeConsistentNONLocalBlock2D, KnowledgeConsistentAttention))
 
         self.combiner = nn.Conv2d(inchannel * 2, inchannel, kernel_size=1)
 
@@ -477,6 +485,8 @@ class RFRModule(nn.Module):
     def __init__(self, in_channel=64, layer_size=6, att_module=NONLocalBlock2D):
         super(RFRModule, self).__init__()
         self.layer_size = layer_size
+
+        self.in_channels = in_channel
 
         # Down convs 3x
         for i in range(3):
@@ -504,9 +514,10 @@ class RFRModule(nn.Module):
             setattr(self, name, block)
 
         # Up convs 3x
-        self.dec_3 = UpConvBNReLU(1024, 512, 3, 1, 1)
-        self.dec_2 = UpConvBNReLU(768, 256, 3, 1, 1)
-        self.dec_1 = UpConvBNReLU(384, 64, 3, 1, 1)
+        self.dec_3 = UpConvBNReLU(512 + 8 * self.in_channels, 512, 3, 1, 1)
+        self.dec_2 = UpConvBNReLU(512 + 4 * self.in_channels, 256, 3, 1, 1)
+        self.dec_1 = UpConvBNReLU(
+            256 + 2 * self.in_channels, self.in_channels, 3, 1, 1)
 
     def forward(self, input, mask):
         h_dict = {}  # for the output of enc_N
@@ -531,6 +542,69 @@ class RFRModule(nn.Module):
                 h = self.att(h, mask)
 
         return h
+
+
+class RFRModulev2(nn.Module):
+
+    def __init__(self, in_channels=64, att_module=NONLocalBlock2D):
+        super(RFRModulev2, self).__init__()
+
+        self.in_channels = in_channels
+
+        c = in_channels
+        self.enc_1 = ConvBNReLU(c, 2 * c, 3, 2, 1)
+        self.enc_2 = ConvBNReLU(2 * c, 4 * c, 3, 2, 1)
+        self.enc_3 = ConvBNReLU(4 * c, 8 * c, 3, 2, 1)
+
+        c = 8 * in_channels
+        self.enc_4 = nn.Sequential(
+            ConvBNReLU(c, c, 3, 1, 2,
+                       dilation=2),
+            ConvBNReLU(c, c, 3, 1, 2,
+                       dilation=2),
+            ConvBNReLU(c, c, 3, 1, 2,
+                       dilation=2),
+            ConvBNReLU(c, c, 3, 1, 2,
+                       dilation=2),
+            ConvBNReLU(c, c, 3, 1, 2,
+                       dilation=2),
+            ConvBNReLU(c, c, 3, 1, 2,
+                       dilation=2),
+            ConvBNReLU(c, c, 3, 1, 2,
+                       dilation=2)
+        )
+
+        self.att_1 = AttentionModule(c, att_module=att_module)
+        self.att_2 = AttentionModule(c, att_module=att_module)
+        # self.att_3 = AttentionModule(256, att_module=att_module)
+
+        # Up convs 3x
+        c = self.in_channels
+        self.dec_3 = UpConvBNReLU(2 * 8 * c, 512,
+                                  3, 1, 1)
+        self.dec_2 = UpConvBNReLU(512 + 4 * c, 256,
+                                  3, 1, 1)
+        self.dec_1 = UpConvBNReLU(256 + 2 * c, c,
+                                  3, 1, 1)
+
+    def forward(self, input, mask):
+        x1 = self.enc_1(input)
+        x2 = self.enc_2(x1)
+        x3 = self.enc_3(x2)
+
+        # dilated convs
+        x4 = self.enc_4(x3)
+        x5 = self.att_1(x4, mask)
+
+        y3 = self.dec_3(torch.cat([x5, x3], dim=1))
+        y3 = self.att_2(y3, mask)
+
+        y2 = self.dec_2(torch.cat([y3, x2], dim=1))
+        # y2 = self.att_3(y2, mask)
+
+        y1 = self.dec_1(torch.cat([y2, x1], dim=1))
+
+        return y1
 
 ###############################################################################
 # Models
@@ -981,12 +1055,93 @@ class RFRNetv6(nn.Module):
                     module.eval()
 
 
+class RFRNetv7(nn.Module):
+
+    def __init__(self, base_channels=64, rfr_module_layer_size=6, recurrence=6):
+        super(RFRNetv7, self).__init__()
+
+        self.base_channels = base_channels
+        self.recurrence = recurrence
+
+        c = base_channels
+        self.pconv1 = PConvBNReLU(3, c, 7, 2, 3, multi_channel=False)
+        self.pconv2 = PConvBNReLU(c, c, 7, 1, 3, multi_channel=False)
+
+        # Recursive
+        self.pconv3 = PConvBNReLU(c, c, 7, 1, 3, multi_channel=False)
+        self.pconv4 = PConvBNReLU(c, c, 7, 1, 3, multi_channel=False)
+        self.rfr = RFRModulev2(c,
+                               att_module=KnowledgeConsistentAttention)
+
+        self.upconv1 = UpConvBNReLU(c, c, 3, 1, 1)
+
+        self.tail1 = ConvBNReLU(c + 3 + 2, c, 3, 1, 1)
+        self.tail2 = ConvBNReLU(c + c + 3 + 2, c, 3, 1, 1)
+        self.out = nn.Conv2d(c + 3 + 2 + c + c, 3, 3, 1, 1,
+                             padding_mode="reflect")
+
+    def forward(self, in_image, mask, recurrence=None, fp16=False):
+        with autocast(fp16):
+            if recurrence is None:
+                recurrence = self.recurrence
+
+            x1, m1 = self.pconv1(in_image, mask[:, [0], :, :])
+            x1, m1 = self.pconv2(x1, m1)
+
+            # Initialize
+            x2, m2 = x1, m1
+            self.rfr.att_1.initialize_knowledge()
+            self.rfr.att_2.initialize_knowledge()
+            # self.rfr.att_3.initialize_knowledge()
+            feature_group = [x2.unsqueeze(2), ]
+            mask_group = [m2.unsqueeze(2), ]
+
+            for i in range(recurrence):
+                x2, m2 = self.pconv3(x2, m2)
+                x2, m2 = self.pconv4(x2, m2)
+                x2 = self.rfr(x2, m2)
+
+                # x2 = x2 * m2  # redundant
+                feature_group.append(x2.unsqueeze(2))
+                mask_group.append(m2.unsqueeze(2))
+
+            # dim=2 = time dimension
+            feature_group = torch.cat(feature_group, dim=2)
+            mask_group = torch.cat(mask_group, dim=2)
+
+            # non-zero mean
+            x3 = (feature_group * mask_group).sum(dim=2) / \
+                (mask_group.sum(dim=2) + 1e-5)
+            m3 = mask_group[:, :, -1, :, :]
+
+            x4 = self.upconv1(x3)
+            m4 = F.interpolate(m3, x4.shape[-2:],
+                               mode="nearest")
+
+            # Skip connections + dense block
+            x5 = self.tail1(
+                torch.cat([in_image, mask[:, [0], :, :], x4, m4], dim=1))
+            x6 = self.tail2(
+                torch.cat([in_image, mask[:, [0], :, :], x4, m4, x5], dim=1))
+            out = self.out(
+                torch.cat([in_image, mask[:, [0], :, :], x4, m4, x5, x6], dim=1))
+
+            return out, None
+
+    def train(self, mode=True, finetune=False):
+        super().train(mode)
+        if finetune:
+            for name, module in self.named_modules():
+                if isinstance(module, nn.BatchNorm2d):
+                    module.eval()
+
+
 if __name__ == "__main__":
     from torchsummary import summary
-    model = RFRNetv6()
+    model = RFRNetv7()
     inputs = (torch.rand(2, 3, 256, 256), torch.rand(2, 3, 256, 256))
-    # summary(model, inputs)
-    out = model(*inputs)
-    print(len(out[1][0]))
-    print(out[1][0][-1].shape)
-    print(out[1][1][-1].shape)
+    summary(model, inputs)
+    # out = model(*inputs)
+    # print(len(out[1][0]))
+    # print(out[1][0][-1].shape)
+    # print(out[1][1][-1].shape)

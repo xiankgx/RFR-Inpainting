@@ -90,12 +90,7 @@ class RFRNetModel():
             start_iter = load_ckpt(path,
                                    [('generator', self.G)],
                                    [('optimizer_G', self.optm_G)])
-
-            if train:
-                self.optm_G = optim.Adam(self.G.parameters(),
-                                         lr=self.learning_rates["train"])
-                print('Model Initialized, iter: ', start_iter)
-                self.iter = start_iter
+            self.iter = start_iter
         except:
             print('No trained model, from start')
             self.iter = 0
@@ -129,8 +124,8 @@ class RFRNetModel():
         self.G.train(finetune=finetune)
         # Overwrite optimizer with a lower lr
         if finetune:
-            self.optm_G = optim.Adam(filter(lambda p: p.requires_grad, self.G.parameters()),
-                                     lr=self.learning_rates["finetune"])
+            for g in self.optm_G.param_groups:
+                g['lr'] = self.learning_rates["finetune"]
 
         # self.fp16 = fp16 and GOT_AMP
         self.fp16 = fp16
@@ -209,34 +204,31 @@ class RFRNetModel():
     def test(self, test_loader, result_save_path):
         self.G.eval()
 
-        for para in self.G.parameters():
-            para.requires_grad = False
+        with torch.no_grad():
+            count = 0
+            for items in test_loader:
+                gt_images, masks = self.__cuda__(*items)
+                masked_images = gt_images * masks
+                if masks.size(1) == 1:
+                    masks = torch.cat([masks, ] * 3, dim=1)
 
-        count = 0
-        for items in test_loader:
-            gt_images, masks = self.__cuda__(*items)
-            masked_images = gt_images * masks
-            # print(f">>> masks.shape: {masks.shape}")
-            if masks.size(1) == 1:
-                masks = torch.cat([masks]*3, dim=1)
+                fake_B, mask = self.G(masked_images, masks)
+                comp_B = fake_B * (1 - masks) + gt_images * masks
 
-            fake_B, mask = self.G(masked_images, masks)
-            comp_B = fake_B * (1 - masks) + gt_images * masks
+                if not os.path.exists('{:s}/results'.format(result_save_path)):
+                    os.makedirs('{:s}/results'.format(result_save_path))
 
-            if not os.path.exists('{:s}/results'.format(result_save_path)):
-                os.makedirs('{:s}/results'.format(result_save_path))
+                for k in range(comp_B.size(0)):
+                    count += 1
+                    grid = make_grid(comp_B[k:k+1])
+                    file_path = '{:s}/results/img_{:d}.png'.format(result_save_path,
+                                                                   count)
+                    save_image(grid, file_path)
 
-            for k in range(comp_B.size(0)):
-                count += 1
-                grid = make_grid(comp_B[k:k+1])
-                file_path = '{:s}/results/img_{:d}.png'.format(result_save_path,
-                                                               count)
-                save_image(grid, file_path)
-
-                grid = make_grid(masked_images[k:k+1] + 1 - masks[k:k+1])
-                file_path = '{:s}/results/masked_img_{:d}.png'.format(result_save_path,
-                                                                      count)
-                save_image(grid, file_path)
+                    grid = make_grid(masked_images[k:k+1] + 1 - masks[k:k+1])
+                    file_path = '{:s}/results/masked_img_{:d}.png'.format(result_save_path,
+                                                                          count)
+                    save_image(grid, file_path)
 
     def forward(self, masked_image, mask, gt_image):
         with autocast(self.fp16):

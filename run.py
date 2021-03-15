@@ -30,7 +30,7 @@ def run():
     model = RFRNetModel()
     if args.test:
         model.initialize_model(args.model_path, False)
-        model.cuda()
+        # model.cuda()
 
         dataloader = DataLoader(Dataset(args.data_root, args.mask_root,
                                         args.mask_mode,
@@ -41,7 +41,7 @@ def run():
         model.test(dataloader, args.result_save_path)
     else:
         model.initialize_model(args.model_path, True)
-        model.cuda()
+        # model.cuda()
 
         dataloader = DataLoader(Dataset(args.data_root, args.mask_root,
                                         args.mask_mode,

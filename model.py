@@ -81,6 +81,8 @@ class RFRNetModel():
         # self.G = RFRNet()
         self.G = RFRNetv7()
         self.additional_data = None
+        self.cuda()
+
         self.optm_G = optim.Adam(self.G.parameters(),
                                  lr=self.learning_rates["train"])
         if train:

@@ -81,12 +81,12 @@ class RFRNetModel():
         # self.G = RFRNet()
         self.G = RFRNetv7()
         self.additional_data = None
-        self.cuda()
-
         self.optm_G = optim.Adam(self.G.parameters(),
                                  lr=self.learning_rates["train"])
         if train:
             self.lossNet = VGG16FeatureExtractor()
+
+        self.cuda()
 
         try:
             start_iter = load_ckpt(path,

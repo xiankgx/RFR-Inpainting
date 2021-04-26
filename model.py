@@ -8,8 +8,8 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import make_grid, save_image
 
-from modules.RFRNet import RFRNet
-from modules.RFRNetv2 import RFRNetv7, VGG16FeatureExtractor
+from modules.RFRNet import RFRNet, VGG16FeatureExtractor
+# from modules.RFRNetv2 import RFRNetv7, VGG16FeatureExtractor
 from utils.io import load_ckpt, save_ckpt
 
 # GOT_AMP = False
@@ -78,8 +78,8 @@ class RFRNetModel():
         self.l1_loss_val = 0.0
 
     def initialize_model(self, path=None, train=True):
-        # self.G = RFRNet()
-        self.G = RFRNetv7()
+        self.G = RFRNet()
+        # self.G = RFRNetv7()
         self.additional_data = None
         self.optm_G = optim.Adam(self.G.parameters(),
                                  lr=self.learning_rates["train"])

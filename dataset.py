@@ -225,7 +225,7 @@ class DatasetV2(torch.utils.data.Dataset):
                               recursive=True)
             self.masks = list(filter(lambda p: os.path.splitext(p)[-1] in img_exts,
                                      masks))
-            print(f"Found {len(self.masks)} images in {self.mask_path}.")
+            print(f"Found {len(self.masks)} masks in {self.mask_path}.")
 
     def _get_transform(self):
         self.transform = self._get_train_transform() if self.training \
@@ -245,12 +245,12 @@ class DatasetV2(torch.utils.data.Dataset):
                     A.SmallestMaxSize(max_size=self.target_size[0],
                                       interpolation=cv2.INTER_LINEAR,
                                       p=1.0),
-                    A.RandomCrop(height=self.target_size[0], width=self.target_size[0],
+                    A.RandomCrop(height=self.target_size[0], width=self.target_size[1],
                                  p=1.0)
                 ], p=1.0),
 
                 A.RandomResizedCrop(height=self.target_size[0], width=self.target_size[1],
-                                    scale=(0.25, 1.0), ratio=(3./4., 4./3.),
+                                    scale=(0.25, 1.0), ratio=(9./16., 16./9.),
                                     interpolation=cv2.INTER_LINEAR,
                                     p=1.0),
 
@@ -263,7 +263,7 @@ class DatasetV2(torch.utils.data.Dataset):
     def _get_test_transform(self):
         print("Using test transform")
         return A.RandomResizedCrop(height=self.target_size[0], width=self.target_size[1],
-                                   scale=(0.75, 1.0), ratio=(3./4., 4./3.),
+                                   scale=(0.75, 1.0), ratio=(9./16., 16./9.),
                                    interpolation=cv2.INTER_LINEAR,
                                    p=1.0)
         # return A.Compose([
@@ -297,8 +297,16 @@ class DatasetV2(torch.utils.data.Dataset):
         # Generate random mask
         elif self.mask_type == 1:
             # [0, 1] -> [0, 255]
-            mask = (generate_stroke_mask(self.target_size) * 255) \
-                .astype(np.uint8)
+            #choice = np.random.choice(list(range(3)))
+            if np.random.rand() < 0.4:
+                mask = (generate_stroke_mask(self.target_size) * 255) \
+                    .astype(np.uint8)
+            elif np.random.rand() < 0.5:
+                mask = (generate_rectangle_mask(self.target_size) * 255) \
+                    .astype(np.uint8)
+            else:
+                mask = (generate_circular_mask(self.target_size) * 255) \
+                    .astype(np.uint8)
             mask = np.array(Image.fromarray(mask).convert("RGB"))
 
         assert img.ndim == 3
@@ -309,15 +317,15 @@ class DatasetV2(torch.utils.data.Dataset):
         if mask.shape[:2] != img.shape[:2]:
             mask = cv2.resize(mask, img.shape[:2][::-1])
 
+        transformed = self.transform(image=img, mask=mask)
+        img = transformed["image"]
+        mask = transformed["mask"]
+
         # Binarization to handle interpolation
         mask = (mask > 0).astype(np.uint8) * 255
 
         if self.mask_reverse:
             mask = 255 - mask
-
-        transformed = self.transform(image=img, mask=mask)
-        img = transformed["image"]
-        mask = transformed["mask"]
 
         assert img.shape[:2] == self.target_size
         assert mask.shape[:2] == self.target_size
@@ -327,7 +335,56 @@ class DatasetV2(torch.utils.data.Dataset):
         return F.to_tensor(img), F.to_tensor(mask)
 
 
-def generate_stroke_mask(im_size, max_parts=15, maxVertex=25, maxLength=100, maxBrushWidth=24, maxAngle=360):
+def generate_rectangle_mask(im_size, min_height=0.25, max_height=0.5, min_width=0.25, max_width=0.5):
+    mask = np.zeros((im_size[0], im_size[1]), dtype=np.float32)
+
+    if isinstance(min_height, float):
+        min_height = int(min_height * im_size[0])
+    if isinstance(max_height, float):
+        max_height = int(max_height * im_size[0])
+    if isinstance(min_width, float):
+        min_width = int(min_width * im_size[1])
+    if isinstance(max_width, float):
+        max_width = int(max_width * im_size[1])
+
+    h = np.random.randint(min_height, max_height)
+    w = np.random.randint(min_width, max_width)
+    y = np.random.randint(0, im_size[0] - h)
+    x = np.random.randint(0, im_size[1] - w)
+    mask[y:y+h, x:x+w] = 1.0
+    mask = np.stack([mask, ] * 3, axis=-1)
+    return mask
+
+
+def generate_circular_mask(im_size, min_radius=0.125, max_radius=0.25):
+    mask = np.zeros((im_size[0], im_size[1]), dtype=np.float32)
+
+    # Get the length of the shorter side
+    min_size = np.min(mask.shape[:2])
+
+    # Compute radius in terms of ratio to the length of the shorter side
+    if isinstance(min_radius, float):
+        min_radius = int(min_radius * min_size)
+    if isinstance(max_radius, float):
+        max_radius = int(max_radius * min_size)
+
+    # Generate circle center coordinate and radius
+    cy = np.random.randint(0, im_size[0])
+    cx = np.random.randint(0, im_size[1])
+    r = np.random.randint(min_radius, max_radius)
+
+    # Compute selection mask based on Euclidean distance to circle center
+    y = np.linspace(0, im_size[0] - 1, im_size[0])
+    x = np.linspace(0, im_size[1] - 1, im_size[1])
+    xv, yv = np.meshgrid(x, y)
+    dist = ((xv - cx) ** 2 + (yv - cy) ** 2) ** 0.5
+
+    mask[(dist < r)] = 1.0
+    mask = np.stack([mask, ] * 3, axis=-1)
+    return mask
+
+
+def generate_stroke_mask(im_size, max_parts=15, maxVertex=25, maxLength=100 * 1.5, maxBrushWidth=24 * 1.5, maxAngle=360):
     mask = np.zeros((im_size[0], im_size[1], 1), dtype=np.float32)
     parts = random.randint(1, max_parts)
     for i in range(parts):

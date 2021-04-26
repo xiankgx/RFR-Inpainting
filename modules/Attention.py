@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# epsilon = 1e-7
-epsilon = 1e-6
+epsilon = 1e-7
+# epsilon = 1e-6
 
 
 class KnowledgeConsistentAttention(nn.Module):
@@ -31,23 +31,23 @@ class KnowledgeConsistentAttention(nn.Module):
         background = foreground.clone()
         conv_kernels_all = background.view(bz, nc, w * h, 1, 1)
         conv_kernels_all = conv_kernels_all.permute(0, 2, 1, 3, 4)
-        print(f"conv_kernels_all.shape: {conv_kernels_all.shape}")
+        # print(f"conv_kernels_all.shape: {conv_kernels_all.shape}")
         output_tensor = []
         att_score = []
 
         for i in range(bz):
             feature_map = foreground[i:i+1]
-            print(f"feature_map.shape: {feature_map.shape}")
+            # print(f"feature_map.shape: {feature_map.shape}")
 
             conv_kernels = conv_kernels_all[i] + epsilon
             norm_factor = torch.sum(conv_kernels ** 2, [1, 2, 3],
                                     keepdim=True) ** 0.5
             conv_kernels = conv_kernels/norm_factor
-            print(f"conv_kernels.shape: {conv_kernels.shape}")
+            # print(f"conv_kernels.shape: {conv_kernels.shape}")
 
             conv_result = F.conv2d(feature_map, conv_kernels,
                                    padding=self.patch_size//2)
-            print(f"conv_result.shape: {conv_result.shape}")
+            # print(f"conv_result.shape: {conv_result.shape}")
             if self.propagate_size != 1:
                 # if self.prop_kernels is None:
                 #     self.prop_kernels = torch.ones(
@@ -56,10 +56,10 @@ class KnowledgeConsistentAttention(nn.Module):
                 #     self.prop_kernels = self.prop_kernels.cuda()
 
                 conv_result = F.avg_pool2d(conv_result, 3, 1, padding=1) * 9
-                print(f"conv_result.shape: {conv_result.shape}")
+                # print(f"conv_result.shape: {conv_result.shape}")
 
             attention_scores = F.softmax(conv_result, dim=1)
-            print(f"attention_scores.shape: {attention_scores.shape}")
+            # print(f"attention_scores.shape: {attention_scores.shape}")
 
             if self.att_scores_prev is not None:
                 attention_scores = \

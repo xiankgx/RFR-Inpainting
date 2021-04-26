@@ -1,13 +1,14 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.cuda.amp import autocast
 from torchvision import models
 
 from modules.Attention import AttentionModule
 from modules.partialconv2d import PartialConv2d
 
-# epsilon = 1e-7
-epsilon = 1e-6  # Avoid overflow when using mixed precision training
+epsilon = 1e-7
+# epsilon = 1e-6  # Avoid overflow when using mixed precision training
 
 
 class VGG16FeatureExtractor(nn.Module):
@@ -24,12 +25,13 @@ class VGG16FeatureExtractor(nn.Module):
             for param in getattr(self, 'enc_{:d}'.format(i + 1)).parameters():
                 param.requires_grad = False
 
-    def forward(self, image):
-        results = [image]
-        for i in range(3):
-            func = getattr(self, 'enc_{:d}'.format(i + 1))
-            results.append(func(results[-1]))
-        return results[1:]
+    def forward(self, image, fp16=False):
+        with autocast(fp16):
+            results = [image]
+            for i in range(3):
+                func = getattr(self, 'enc_{:d}'.format(i + 1))
+                results.append(func(results[-1]))
+            return results[1:]
 
 
 class Bottleneck(nn.Module):
@@ -79,7 +81,7 @@ class RFRModule(nn.Module):
 
     def __init__(self, layer_size=6, in_channel=64):
         super(RFRModule, self).__init__()
-        # self.freeze_enc_bn = False  # unused
+        self.freeze_enc_bn = False
         self.layer_size = layer_size
 
         for i in range(3):
@@ -118,24 +120,33 @@ class RFRModule(nn.Module):
             setattr(self, name, nn.Sequential(*block))
 
         block = [
-            nn.ConvTranspose2d(1024, 512, 4, 2, 1,
-                               bias=False),
+            nn.Sequential(
+                nn.Conv2d(1024, 512, 1, 1, 0, bias=False),
+                nn.Upsample(scale_factor=2, mode='nearest'),
+                nn.Conv2d(512, 512, 3, 1, 1, groups=512, bias=False)
+            ),
             nn.BatchNorm2d(512),
             nn.LeakyReLU(0.2, inplace=True)
         ]
         self.dec_3 = nn.Sequential(*block)
 
         block = [
-            nn.ConvTranspose2d(768, 256, 4, 2, 1,
-                               bias=False),
+            nn.Sequential(
+                nn.Conv2d(768, 256, 1, 1, 0, bias=False),
+                nn.Upsample(scale_factor=2, mode='nearest'),
+                nn.Conv2d(256, 256, 3, 1, 1, groups=256, bias=False)
+            ),
             nn.BatchNorm2d(256),
             nn.LeakyReLU(0.2, inplace=True)
         ]
         self.dec_2 = nn.Sequential(*block)
 
         block = [
-            nn.ConvTranspose2d(384, 64, 4, 2, 1,
-                               bias=False),
+            nn.Sequential(
+                nn.Conv2d(384, 64, 1, 1, 0, bias=False),
+                nn.Upsample(scale_factor=2, mode='nearest'),
+                nn.Conv2d(64, 64, 3, 1, 1, groups=64, bias=False)
+            ),
             nn.BatchNorm2d(64),
             nn.LeakyReLU(0.2, inplace=True)
         ]
@@ -164,6 +175,117 @@ class RFRModule(nn.Module):
         return h
 
 
+# class RFRNet(nn.Module):
+
+#     def __init__(self):
+#         super(RFRNet, self).__init__()
+
+#         self.Pconv1 = PartialConv2d(3, 64, 7, 2, 3,
+#                                     multi_channel=True,
+#                                     bias=False)
+#         self.bn1 = nn.BatchNorm2d(64)
+
+#         self.Pconv2 = PartialConv2d(64, 64, 7, 1, 3,
+#                                     multi_channel=True,
+#                                     bias=False)
+#         self.bn20 = nn.BatchNorm2d(64)
+
+#         self.Pconv21 = PartialConv2d(64, 64, 7, 1, 3,
+#                                      multi_channel=True,
+#                                      bias=False)
+#         self.Pconv22 = PartialConv2d(64, 64, 7, 1, 3,
+#                                      multi_channel=True,
+#                                      bias=False)
+#         self.bn2 = nn.BatchNorm2d(64)
+
+#         self.RFRModule = RFRModule()
+
+#         self.Tconv = nn.ConvTranspose2d(64, 64, 4, 2, 1,
+#                                         bias=False)
+#         self.bn3 = nn.BatchNorm2d(64)
+
+#         self.tail1 = PartialConv2d(67, 32, 3, 1, 1,
+#                                    multi_channel=True,
+#                                    bias=False)
+#         self.tail2 = Bottleneck(32, 8)
+
+#         self.out = nn.Conv2d(64, 3, 3, 1, 1, bias=False)
+
+#     def forward(self, in_image, mask, recurrence=6):
+#         x1, m1 = self.Pconv1(in_image, mask)
+#         x1 = F.relu(self.bn1(x1), inplace=True)
+#         x1, m1 = self.Pconv2(x1, m1)
+#         x1 = F.relu(self.bn20(x1), inplace=True)
+
+#         # x2 = x1
+#         x2, m2 = x1, m1
+#         n, c, h, w = x2.size()
+#         feature_group = [x2.view(n, c, 1, h, w)]
+#         mask_group = [m2.view(n, c, 1, h, w)]
+#         self.RFRModule.att.att.att_scores_prev = None
+#         self.RFRModule.att.att.masks_prev = None
+
+#         assert not torch.any(torch.isnan(x2))
+#         assert not torch.any(torch.isnan(m2))
+
+#         for i in range(recurrence):
+#             x2, m2 = self.Pconv21(x2, m2)
+#             x2, m2 = self.Pconv22(x2, m2)
+#             x2 = F.leaky_relu(self.bn2(x2), inplace=True)
+
+#             assert not torch.any(torch.isnan(x2)), f"Recurrence #{i} - NAN output"
+#             assert not torch.any(torch.isnan(m2))
+
+#             x2 = self.RFRModule(x2, m2[:, 0:1, :, :])
+
+#             assert not torch.any(torch.isnan(x2))
+
+#             x2 = x2 * m2
+#             feature_group.append(x2.view(n, c, 1, h, w))
+#             mask_group.append(m2.view(n, c, 1, h, w))
+
+#         x3 = torch.cat(feature_group, dim=2)
+#         m3 = torch.cat(mask_group, dim=2)
+#         amp_vec = m3.mean(dim=2)
+#         x3 = (x3 * m3).mean(dim=2)/(amp_vec + epsilon)
+#         x3 = x3.view(n, c, h, w)
+#         m3 = m3[:, :, -1, :, :]
+
+#         assert not torch.any(torch.isnan(x3))
+#         assert not torch.any(torch.isnan(m3))
+
+#         x4 = self.Tconv(x3)
+#         x4 = F.leaky_relu(self.bn3(x4), inplace=True)
+#         m4 = F.interpolate(m3, scale_factor=2)
+
+#         assert not torch.any(torch.isnan(x4))
+#         assert not torch.any(torch.isnan(m4))
+
+#         x5 = torch.cat([in_image, x4], dim=1)
+#         m5 = torch.cat([mask, m4], dim=1)
+#         x5, _ = self.tail1(x5, m5)
+#         x5 = F.leaky_relu(x5, inplace=True)
+
+#         assert not torch.any(torch.isnan(x5))
+#         assert not torch.any(torch.isnan(m5))
+
+#         x6 = self.tail2(x5)
+#         x6 = torch.cat([x5, x6], dim=1)
+
+#         assert not torch.any(torch.isnan(x6))
+
+#         output = self.out(x6)
+
+#         return output, None
+
+#     def train(self, mode=True, finetune=False):
+#         super().train(mode)
+#         if finetune:
+#             for name, module in self.named_modules():
+#                 if isinstance(module, nn.BatchNorm2d):
+#                     module.eval()
+
+# XXX DINGSHENG MOD
 class RFRNet(nn.Module):
 
     def __init__(self):
@@ -189,8 +311,12 @@ class RFRNet(nn.Module):
 
         self.RFRModule = RFRModule()
 
-        self.Tconv = nn.ConvTranspose2d(64, 64, 4, 2, 1,
-                                        bias=False)
+        self.Tconv = nn.Sequential(
+            nn.Conv2d(64, 64, 1, 1, 0, bias=False),
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            nn.Conv2d(64, 64, 3, 1, 1, groups=64, bias=False)
+        )
+
         self.bn3 = nn.BatchNorm2d(64)
 
         self.tail1 = PartialConv2d(67, 32, 3, 1, 1,
@@ -200,72 +326,76 @@ class RFRNet(nn.Module):
 
         self.out = nn.Conv2d(64, 3, 3, 1, 1, bias=False)
 
-    def forward(self, in_image, mask, recurrence=6):
-        x1, m1 = self.Pconv1(in_image, mask)
-        x1 = F.relu(self.bn1(x1), inplace=True)
-        x1, m1 = self.Pconv2(x1, m1)
-        x1 = F.relu(self.bn20(x1), inplace=True)
+    def forward(self, in_image, mask, recurrence=10, fp16=False):
+        with autocast(fp16):
+            x1, m1 = self.Pconv1(in_image, mask)
+            x1 = F.relu(self.bn1(x1), inplace=True)
+            x1, m1 = self.Pconv2(x1, m1)
+            x1 = F.relu(self.bn20(x1), inplace=True)
 
-        # x2 = x1
-        x2, m2 = x1, m1
-        n, c, h, w = x2.size()
-        feature_group = [x2.view(n, c, 1, h, w)]
-        mask_group = [m2.view(n, c, 1, h, w)]
-        self.RFRModule.att.att.att_scores_prev = None
-        self.RFRModule.att.att.masks_prev = None
-
-        assert not torch.any(torch.isnan(x2))
-        assert not torch.any(torch.isnan(m2))
-
-        for i in range(recurrence):
-            x2, m2 = self.Pconv21(x2, m2)
-            x2, m2 = self.Pconv22(x2, m2)
-            x2 = F.leaky_relu(self.bn2(x2), inplace=True)
-
-            assert not torch.any(torch.isnan(x2)), f"Recurrence #{i} - NAN output"
-            assert not torch.any(torch.isnan(m2))
-
-            x2 = self.RFRModule(x2, m2[:, 0:1, :, :])
+            # x2 = x1
+            x2, m2 = x1, m1
+            n, c, h, w = x2.size()
+            feature_group = [x2.view(n, c, 1, h, w)]
+            mask_group = [m2.view(n, c, 1, h, w)]
+            self.RFRModule.att.att.att_scores_prev = None
+            self.RFRModule.att.att.masks_prev = None
 
             assert not torch.any(torch.isnan(x2))
+            assert not torch.any(torch.isnan(m2))
 
-            x2 = x2 * m2
-            feature_group.append(x2.view(n, c, 1, h, w))
-            mask_group.append(m2.view(n, c, 1, h, w))
+            for i in range(recurrence):
+                x2, m2 = self.Pconv21(x2, m2)
+                x2, m2 = self.Pconv22(x2, m2)
+                x2 = F.leaky_relu(self.bn2(x2), inplace=True)
 
-        x3 = torch.cat(feature_group, dim=2)
-        m3 = torch.cat(mask_group, dim=2)
-        amp_vec = m3.mean(dim=2)
-        x3 = (x3 * m3).mean(dim=2)/(amp_vec + epsilon)
-        x3 = x3.view(n, c, h, w)
-        m3 = m3[:, :, -1, :, :]
+                assert not torch.any(torch.isnan(
+                    x2)), f"Recurrence #{i} - NAN output"
+                assert not torch.any(torch.isnan(m2))
 
-        assert not torch.any(torch.isnan(x3))
-        assert not torch.any(torch.isnan(m3))
+                x2 = self.RFRModule(x2, m2[:, 0:1, :, :])
 
-        x4 = self.Tconv(x3)
-        x4 = F.leaky_relu(self.bn3(x4), inplace=True)
-        m4 = F.interpolate(m3, scale_factor=2)
+                assert not torch.any(torch.isnan(x2))
 
-        assert not torch.any(torch.isnan(x4))
-        assert not torch.any(torch.isnan(m4))
+                x2 = x2 * m2
+                feature_group.append(x2.view(n, c, 1, h, w))
+                mask_group.append(m2.view(n, c, 1, h, w))
 
-        x5 = torch.cat([in_image, x4], dim=1)
-        m5 = torch.cat([mask, m4], dim=1)
-        x5, _ = self.tail1(x5, m5)
-        x5 = F.leaky_relu(x5, inplace=True)
+            x3 = torch.cat(feature_group, dim=2)
+            m3 = torch.cat(mask_group, dim=2)
+            amp_vec = m3.mean(dim=2)
+            x3 = (x3 * m3).mean(dim=2)/(amp_vec + epsilon)
+            x3 = x3.view(n, c, h, w)
+            m3 = m3[:, :, -1, :, :]
 
-        assert not torch.any(torch.isnan(x5))
-        assert not torch.any(torch.isnan(m5))
+            assert not torch.any(torch.isnan(x3))
+            assert not torch.any(torch.isnan(m3))
 
-        x6 = self.tail2(x5)
-        x6 = torch.cat([x5, x6], dim=1)
+            x4 = self.Tconv(x3)
+            x4 = F.leaky_relu(self.bn3(x4), inplace=True)
+            m4 = F.interpolate(m3, scale_factor=2)
 
-        assert not torch.any(torch.isnan(x6))
+            assert not torch.any(torch.isnan(x4))
+            assert not torch.any(torch.isnan(m4))
 
-        output = self.out(x6)
+            x5 = torch.cat([in_image, x4], dim=1)
+            m5 = torch.cat([mask, m4], dim=1)
+            x5, _ = self.tail1(x5, m5)
+            x5 = F.leaky_relu(x5, inplace=True)
 
-        return output, None
+            assert not torch.any(torch.isnan(x5))
+            assert not torch.any(torch.isnan(m5))
+
+            x6 = self.tail2(x5)
+            x6 = torch.cat([x5, x6], dim=1)
+
+            assert not torch.any(torch.isnan(x6))
+
+            output = self.out(x6)
+
+            # return output, None
+            # return torch.clamp(output, 0.0, 1.0), None
+            return output, None
 
     def train(self, mode=True, finetune=False):
         super().train(mode)
